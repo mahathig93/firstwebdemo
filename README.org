@@ -1,0 +1,212 @@
+#+REVEAL_ROOT: http://cdn.jsdelivr.net/reveal.js/3.0.0/
+* Torbit class
+
+Create a website utilizing multiple Torbit products in the QA env so that
+you can understand how our customers use torbit.
+
+Goals:
+
+- Create an origin configuration
+- Create a GSLB configuration
+- Utilize Edge compute plugins
+- View statistics for your new app
+
+** Begin with the end in mind
+
+#+BEGIN_SRC dot :file archi.png
+digraph G {
+browser->GSLB;
+GSLB->odnd1;
+GSLB->odnd2;
+GSLB->odnd3;
+}
+#+END_SRC
+
+#+RESULTS:
+[[file:archi.png]]
+
+** Step 1: Creating a basic website
+
+Fork this repo to your user. https://gecgithub01.walmart.com/shanse1/torbit-class
+
+Make a single change in master: open static/index.html and change "Torbit Demo Site"
+to "$name's Demo Site". Example "Shane's Demo Site".
+
+Push your changes to your master.
+
+** Step 2: Log into QA
+
+http://control-qa.tb.walmartlabs.com/
+
+** Step 3: add an origin config
+
+You should see a button: "Add Origin Config". Click it.
+
+torbit-class.$USERNAME.glb-qa.torbit.walmart.net
+
+For example:
+
+torbit-class.shanse1.glb-qa.torbit.walmart.net
+
+- Set type to gh (github) origin.
+- Set whatever description you want "training config"
+- Allow access to group: Torbit
+
+** Gh settings:
+
+- Branch name: master
+- User ID: your AD ID
+- Generate a token: https://gecgithub01.walmart.com/settings/tokens
+- Token description: "My QA config token"
+- Check repo: public_repo
+
+Back to admind:
+- Paste token
+- Click: "enable syncing allows ..."
+- Save your origin
+- View the advanced JSON
+- Disable cache
+
+** Step 4: wait for origin sync (this could take a few minutes)
+
+View http://10.65.42.197/staticAssetsVersion if you want, or run the cli.
+
+#+BEGIN_SRC sh
+./check_repo.sh 10.65.42.197 shanse1/torbit-class
+#+END_SRC
+
+#+RESULTS:
+
+** Step 5: View your website
+
+- Add the following line to your /etc/hosts
+- 10.65.42.197 torbit-class.$USERNAME.glb-qa.torbit.walmart.net
+- Visit torbit-class.$USERNAME.glb-qa.torbit.walmart.net/static/
+- Enjoy!
+
+** Step 6: Let's make our first Torbit routing change
+
+- Go back to the list of origins and search for your name.
+- Click on your origin
+- add version description "adding routing script"
+- Today we will just use legacy lua hooks to mount the app at "/" rather than "/static"
+
+#+BEGIN_SRC lua
+function PreRequest(req)
+  local path = req:path()
+  req:setPath("/static"..path)
+end
+#+END_SRC
+
+- Save and deploy live
+- Go hard refresh your website and visit http://torbit-class.$USER.glb-qa.torbit.walmart.net/ (no static)
+
+** Step 7 let's configure a load balancer
+
+10.242.192.56 -> [10.65.42.198, 10.65.42.199]
+10.242.192.57 -> [10.65.42.197]
+
+** Step 7: Set up DNS
+
+- Remove the /etc/hosts entry!
+- Visit GSLB/MTD https://control-qa.tb.walmartlabs.com/mtdBasesList
+- Add a new base config .$USERNAME.glb-qa.torbit.walmart.net
+- Select GSLB type
+- This is important, it must end with glb-qa.torbit.walmart.net!
+- Add a new host: "torbit-class"
+- TTL=5s
+
+** Step 7 Part 2: configure targets
+- Add the following Targets (These are torbit QA nodes, in reality would be t2 vips)
+ + Datacenter=DFW, Cloud=dfw-misc
+ + 10.65.42.198
+ + 10.65.42.199
+ + 10.65.42.197
+
+** Step 7 Part 3: configure health checks
+- Add a health check
+ + Name "test health check"
+ + proto: http, port:80
+ + test object path /health
+ + Test inverval 10s
+ + Timeout 5s
+ + Add a description
+ + "Save & Deploy"
+
+** Step 7 Part 4: check your DNS
+- Test
+
+
+#+BEGIN_SRC sh :results verbatim
+dig @172.29.199.12 torbit-class.shanse1.glb-qa.torbit.walmart.net
+#+END_SRC
+
+#+RESULTS:
+#+begin_example
+
+; <<>> DiG 9.10.3-P4-Ubuntu <<>> @172.29.199.12 torbit-class.shanse1.glb-qa.torbit.walmart.net
+; (1 server found)
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 37372
+;; flags: qr rd ra; QUERY: 1, ANSWER: 3, AUTHORITY: 0, ADDITIONAL: 1
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4096
+;; QUESTION SECTION:
+;torbit-class.shanse1.glb-qa.torbit.walmart.net.	IN A
+
+;; ANSWER SECTION:
+torbit-class.shanse1.glb-qa.torbit.walmart.net.	1 IN A 10.65.42.198
+torbit-class.shanse1.glb-qa.torbit.walmart.net.	1 IN A 10.65.42.197
+torbit-class.shanse1.glb-qa.torbit.walmart.net.	1 IN A 10.65.42.199
+
+;; Query time: 1533 msec
+;; SERVER: 172.29.199.12#53(172.29.199.12)
+;; WHEN: Mon Oct 22 09:10:49 UTC 2018
+;; MSG SIZE  rcvd: 123
+
+#+end_example
+
+** Step 8: View your website in all of it's glory!
+
+** Step 9: Add a small compute plugin
+
+#+BEGIN_SRC lua
+function PreRequest(req,odn,resp,originalReq)
+  local path = req:path()
+  if path == "/echo" then
+      local msg = req:query("msg")[1]
+      resp:setBody(msg.."\n", 200)
+      return
+  end
+  req:setPath("/static"..path)
+end
+#+END_SRC
+
+Save your changes, wait for them to propogate and then.
+
+** Step 10: testing
+
+- Re-enable caching on your origin
+- Test throughput using wrk or ab
+- https://github.com/wg/wrk
+- https://httpd.apache.org/docs/2.4/programs/ab.html
+
+#+BEGIN_SRC sh
+# ubuntu/debian
+apt-get install apache2-utils
+#+END_SRC
+
+#+BEGIN_SRC sh
+ab -c 10 -n 100 'http://torbit-class.$USER.glb-qa.torbit.walmart.net/'
+#+END_SRC
+
+#+RESULTS:
+
+
+** Step 11: view some stats for your app
+
+- Replace with your username (convention is dots to underscores)
+https://systemstats.tb.walmartlabs.com/dashboard/db/origin-health?refresh=1m&orgId=1&var-origin=torbit-class_shanse1_glb-qa_torbit_walmart_net
+
